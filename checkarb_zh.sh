@@ -28,12 +28,12 @@
 #####DefineVariable
 ACTIVE_SLOT=""
 WORK_DIR="/data/local/tmp/checkarb"
-PART_BASE="/dev/block/bootdevice/by-name/"
 OUTPUT_FILE="xbl_config.img"
 BIN_ZIP_HASH="81efe18f604f93f21941d198a0157873d74a656a947572ff0e3a027ad8904298"
 MARKER="__ARCHIVE_FOLLOWS__"
 IS_MEDIATEK=0
 BUSYBOX_CMD="busybox"
+CANDIDATE_BASES="/dev/block/bootdevice/by-name /dev/block/platform/*/by-name /dev/block/by-name"
 #####End
 
 #####Fun
@@ -151,12 +151,21 @@ check_if_mediatek() {
     mtk_platform=$(getprop ro.mediatek.platform 2>/dev/null)
     board_platform=$(getprop ro.board.platform 2>/dev/null)
     chipname=$(getprop ro.chipname 2>/dev/null)
-    if [ -n "$mtk_platform" ] && echo "$mtk_platform" | grep -i 'mt' >/dev/null 2>&1; then
-        IS_MEDIATEK=1
-    elif [ -n "$board_platform" ] && echo "$board_platform" | grep -i '^mt' >/dev/null 2>&1; then
-        IS_MEDIATEK=1
-    elif [ -n "$chipname" ] && echo "$chipname" | grep -i 'dimensity' >/dev/null 2>&1; then
-        IS_MEDIATEK=1
+    
+    if [ -n "$mtk_platform" ]; then
+        case "$mtk_platform" in
+            *[mM][tT]*|*[Mm][Tt]*) IS_MEDIATEK=1 ;;
+        esac
+    fi
+    if [ $IS_MEDIATEK -eq 0 ] && [ -n "$board_platform" ]; then
+        case "$board_platform" in
+            [mM][tT]*|[Mm][Tt]*) IS_MEDIATEK=1 ;;
+        esac
+    fi
+    if [ $IS_MEDIATEK -eq 0 ] && [ -n "$chipname" ]; then
+        case "$chipname" in
+            *[dD][iI][mM][eE][nN][sS][iI][tT][yY]*) IS_MEDIATEK=1 ;;
+        esac
     fi
 }
 
@@ -172,17 +181,175 @@ find_busybox() {
 }
 
 get_active_slot() {
-    get_active_slot_slot=$(getprop ro.boot.slot_suffix 2>/dev/null)
-    if [ -z "$get_active_slot_slot" ]; then
-        get_active_slot_slot=$(getprop ro.boot.slot 2>/dev/null)
-        if [ -n "$get_active_slot_slot" ]; then
-            case "$get_active_slot_slot" in
-                a|b) get_active_slot_slot="_$get_active_slot_slot" ;;
-                *) get_active_slot_slot="" ;;
-            esac
-        fi
+    slot=$(getprop ro.boot.slot_suffix 2>/dev/null)
+    if [ -z "$slot" ]; then
+        slot=$(getprop ro.boot.slot 2>/dev/null)
     fi
-    echo "$get_active_slot_slot"
+    case "$slot" in
+        *a*) echo "a" ;;
+        *b*) echo "b" ;;
+        *) echo "" ;;
+    esac
+}
+
+gather_xbl_config_partitions() {
+    tmp_file="$WORK_DIR/partlist.tmp"
+    find_cmd=""
+    for candidate in "find" "busybox find" "$BUSYBOX_CMD find"; do
+        set -- $candidate
+        cmd="$1"
+        shift
+        if command -v "$cmd" >/dev/null 2>&1; then
+            if "$cmd" "$@" /dev/block -maxdepth 0 -iname "xbl_config" 2>/dev/null >/dev/null; then
+                find_cmd="$cmd $*"
+                break
+            fi
+        fi
+    done
+    if [ -n "$find_cmd" ]; then
+        su -c "$find_cmd /dev/block -iname '*xbl_config*' 2>/dev/null > \"$tmp_file\""
+    else
+        su -c "find /dev/block -name '*xbl_config*' -o -name '*XBL_CONFIG*' 2>/dev/null > \"$tmp_file\""
+    fi
+    if [ -s "$tmp_file" ]; then
+        if command -v sort >/dev/null 2>&1; then
+            sort -u "$tmp_file" -o "$tmp_file"
+        elif command -v busybox >/dev/null 2>&1 && busybox sort --help >/dev/null 2>&1; then
+            busybox sort -u "$tmp_file" -o "$tmp_file"
+        elif [ -n "$BUSYBOX_CMD" ] && [ -x "$BUSYBOX_CMD" ] && "$BUSYBOX_CMD" sort --help >/dev/null 2>&1; then
+            "$BUSYBOX_CMD" sort -u "$tmp_file" -o "$tmp_file"
+        fi
+        cat "$tmp_file"
+    fi
+    rm -f "$tmp_file"
+}
+
+select_partition_manually() {
+    echo "正在扫描所有包含 xbl_config 的分区..." >&2
+    part_list=$(gather_xbl_config_partitions)
+    count=0
+    for p in $part_list; do
+        count=$((count + 1))
+    done
+    if [ $count -eq 0 ]; then
+        echo "错误：未找到任何 xbl_config 分区文件" >&2
+        return 1
+    fi
+    echo "找到以下分区：" >&2
+    i=1
+    for p in $part_list; do
+        printf "  %d) %s\n" $i "$p" >&2
+        i=$((i + 1))
+    done
+    printf "请输入数字选择 (1-%d): " $count >&2
+    read choice
+    case "$choice" in
+        ''|*[!0-9]*)
+            echo "错误：输入无效" >&2
+            return 1
+            ;;
+        *)
+            if [ $choice -lt 1 ] || [ $choice -gt $count ]; then
+                echo "错误：数字超出范围" >&2
+                return 1
+            fi
+            i=1
+            for p in $part_list; do
+                if [ $i -eq $choice ]; then
+                    echo "$p"
+                    return 0
+                fi
+                i=$((i + 1))
+            done
+            ;;
+    esac
+    return 1
+}
+
+find_partition_path() {
+    partition_basename="$1"
+    slot_suffix="$2"
+    
+    if [ -n "$slot_suffix" ]; then
+        for base in $CANDIDATE_BASES; do
+            for path in $base; do
+                if [ -d "$path" ]; then
+                    candidate="${path}/${partition_basename}_${slot_suffix}"
+                    if [ -e "$candidate" ]; then
+                        echo "$candidate"
+                        return 0
+                    fi
+                fi
+            done
+        done
+    else
+        for base in $CANDIDATE_BASES; do
+            for path in $base; do
+                if [ -d "$path" ]; then
+                    candidate="${path}/${partition_basename}"
+                    if [ -e "$candidate" ]; then
+                        echo "$candidate"
+                        return 0
+                    fi
+                fi
+            done
+        done
+    fi
+
+    found_files=""
+    for base in $CANDIDATE_BASES; do
+        for path in $base; do
+            if [ -d "$path" ]; then
+                for file in "$path"/*; do
+                    if [ -f "$file" ]; then
+                        filename=$(basename "$file")
+                        case "$filename" in
+                            *xbl_config*)
+                                found_files="$found_files $file"
+                                ;;
+                        esac
+                    fi
+                done
+            fi
+        done
+    done
+    dir_list=$(find /dev/block -type d -name "by-name" 2>/dev/null)
+    for dir in $dir_list; do
+        if [ -d "$dir" ]; then
+            for file in "$dir"/*; do
+                if [ -f "$file" ]; then
+                    filename=$(basename "$file")
+                    case "$filename" in
+                        *xbl_config*)
+                            found_files="$found_files $file"
+                            ;;
+                    esac
+                fi
+            done
+        fi
+    done
+
+    for file in $found_files; do
+        filename=$(basename "$file")
+        suffix=${filename##xbl_config}
+        if [ -z "$suffix" ] && [ -z "$slot_suffix" ]; then
+            echo "$file"
+            return 0
+        fi
+        if [ "$slot_suffix" = "a" ]; then
+            if [ "$suffix" = "_a" ] || [ "$suffix" = "a" ]; then
+                echo "$file"
+                return 0
+            fi
+        fi
+        if [ "$slot_suffix" = "b" ]; then
+            if [ "$suffix" = "_b" ] || [ "$suffix" = "b" ]; then
+                echo "$file"
+                return 0
+            fi
+        fi
+    done
+    return 1
 }
 
 prepare_tools() {
@@ -208,11 +375,17 @@ prepare_tools() {
 
     if command -v sha256sum >/dev/null 2>&1; then
         computed_hash=$(su -c "sha256sum \"$tmp_zip\"" | cut -d' ' -f1)
-    elif command -v $BUSYBOX_CMD >/dev/null 2>&1 && $BUSYBOX_CMD --list | grep sha256sum >/dev/null 2>&1; then
+    elif command -v busybox >/dev/null 2>&1 && busybox sha256sum --help >/dev/null 2>&1; then
+        computed_hash=$(su -c "busybox sha256sum \"$tmp_zip\"" | cut -d' ' -f1)
+    elif [ -n "$BUSYBOX_CMD" ] && [ -x "$BUSYBOX_CMD" ] && "$BUSYBOX_CMD" sha256sum --help >/dev/null 2>&1; then
         computed_hash=$(su -c "$BUSYBOX_CMD sha256sum \"$tmp_zip\"" | cut -d' ' -f1)
     elif command -v openssl >/dev/null 2>&1; then
         computed_hash=$(su -c "openssl dgst -sha256 \"$tmp_zip\"" | cut -d' ' -f2)
     else
+        computed_hash=""
+    fi
+
+    if [ -z "$computed_hash" ]; then
         echo "错误：找不到可用的 SHA256 计算工具（需要 sha256sum、busybox sha256sum 或 openssl）" >&2
         exit 1
     fi
@@ -230,9 +403,14 @@ prepare_tools() {
             echo "错误：解压 bin.zip 失败" >&2
             exit 1
         }
-    elif command -v $BUSYBOX_CMD >/dev/null 2>&1 && $BUSYBOX_CMD --list | grep unzip >/dev/null 2>&1; then
+    elif command -v busybox >/dev/null 2>&1 && busybox unzip --help >/dev/null 2>&1; then
+        su -c "busybox unzip -q -o \"$tmp_zip\" -d \"$WORK_DIR\"" || {
+            echo "错误：使用 busybox 解压失败" >&2
+            exit 1
+        }
+    elif [ -n "$BUSYBOX_CMD" ] && [ -x "$BUSYBOX_CMD" ] && "$BUSYBOX_CMD" unzip --help >/dev/null 2>&1; then
         su -c "$BUSYBOX_CMD unzip -q -o \"$tmp_zip\" -d \"$WORK_DIR\"" || {
-            echo "错误：使用 $BUSYBOX_CMD 解压失败" >&2
+            echo "错误：使用备用 busybox 解压失败" >&2
             exit 1
         }
     else
@@ -265,9 +443,14 @@ prepare_tools() {
             echo "错误：解压 $tool_zip 失败" >&2
             exit 1
         }
-    elif command -v $BUSYBOX_CMD >/dev/null 2>&1 && $BUSYBOX_CMD --list | grep unzip >/dev/null 2>&1; then
+    elif command -v busybox >/dev/null 2>&1 && busybox unzip --help >/dev/null 2>&1; then
+        su -c "busybox unzip -q -o \"$WORK_DIR/$tool_zip\" -d \"$WORK_DIR\"" || {
+            echo "错误：使用 busybox 解压 $tool_zip 失败" >&2
+            exit 1
+        }
+    elif [ -n "$BUSYBOX_CMD" ] && [ -x "$BUSYBOX_CMD" ] && "$BUSYBOX_CMD" unzip --help >/dev/null 2>&1; then
         su -c "$BUSYBOX_CMD unzip -q -o \"$WORK_DIR/$tool_zip\" -d \"$WORK_DIR\"" || {
-            echo "错误：使用 $BUSYBOX_CMD 解压 $tool_zip 失败" >&2
+            echo "错误：使用备用 busybox 解压 $tool_zip 失败" >&2
             exit 1
         }
     else
@@ -311,24 +494,28 @@ ensure_temp_dir() {
 
 fetch_xbl_config() {
     fetch_xbl_config_slot="$1"
-    fetch_xbl_config_partition="xbl_config"
-    if [ -n "$fetch_xbl_config_slot" ]; then
-        fetch_xbl_config_partition="xbl_config${fetch_xbl_config_slot}"
+    manual_path="$2"
+    partition_basename="xbl_config"
+    
+    if [ -n "$manual_path" ]; then
+        partition_path="$manual_path"
+    else
+        partition_path=$(find_partition_path "$partition_basename" "$fetch_xbl_config_slot")
     fi
-    fetch_xbl_config_src="${PART_BASE}${fetch_xbl_config_partition}"
+    
+    if [ -z "$partition_path" ]; then
+        echo "错误：找不到 $partition_basename 分区" >&2
+        return 1
+    fi
+    
     fetch_xbl_config_dst="${WORK_DIR}/${OUTPUT_FILE}"
-
-    if ! su -c "test -e '$fetch_xbl_config_src'"; then
-        echo "错误：分区 $fetch_xbl_config_src 不存在" >&2
+    
+    if ! su -c "cat '$partition_path' > '$fetch_xbl_config_dst'"; then
+        echo "错误：无法读取分区 $partition_path 或写入 $fetch_xbl_config_dst" >&2
         return 1
     fi
 
-    if ! su -c "cat '$fetch_xbl_config_src' > '$fetch_xbl_config_dst'"; then
-        echo "错误：无法读取分区 $fetch_xbl_config_src 或写入 $fetch_xbl_config_dst" >&2
-        return 1
-    fi
-
-    echo "已成功将 $fetch_xbl_config_partition 复制到 $fetch_xbl_config_dst"
+    echo "已成功将 $(basename $partition_path) 复制到 $fetch_xbl_config_dst"
     return 0
 }
 
@@ -341,8 +528,9 @@ ask_source_type() {
     echo "" >&2
     echo "  1) 本机分区 (从当前设备提取)" >&2
     echo "  2) 外部文件 (手动提供 img 文件)" >&2
+    echo "  3) 更多 xbl_config (手动选择分区)" >&2
     echo "" >&2
-    printf "请输入数字 1 或 2：" >&2
+    printf "请输入数字 1-3：" >&2
     read ask_source_type_result
     echo "$ask_source_type_result"
 }
@@ -412,17 +600,50 @@ handle_external() {
     inspect_generic "$external_path"
 }
 
-handle_local() {
+handle_local_auto() {
     if confirm_extraction "$ACTIVE_SLOT"; then
         ensure_temp_dir
         if ! fetch_xbl_config "$ACTIVE_SLOT"; then
-            echo "错误：无法获取 xbl_config 固件" >&2
+            echo "自动识别失败，是否进入手动选择？(y/n)" >&2
+            read ans
+            case "$ans" in
+                [yY]|[yY][eE][sS])
+                    manual_path=$(select_partition_manually)
+                    if [ -n "$manual_path" ]; then
+                        if fetch_xbl_config "" "$manual_path"; then
+                            inspect_generic "$WORK_DIR/$OUTPUT_FILE"
+                        else
+                            exit 1
+                        fi
+                    else
+                        exit 1
+                    fi
+                    ;;
+                *)
+                    echo "用户取消操作。" >&2
+                    exit 0
+                    ;;
+            esac
+        else
+            inspect_generic "$WORK_DIR/$OUTPUT_FILE"
+        fi
+    else
+        echo "用户取消操作。" >&2
+        exit 0
+    fi
+}
+
+handle_manual_select() {
+    ensure_temp_dir
+    manual_path=$(select_partition_manually)
+    if [ -n "$manual_path" ]; then
+        if fetch_xbl_config "" "$manual_path"; then
+            inspect_generic "$WORK_DIR/$OUTPUT_FILE"
+        else
             exit 1
         fi
-        inspect_generic "$WORK_DIR/$OUTPUT_FILE"
     else
-        echo "用户取消操作。"
-        exit 0
+        exit 1
     fi
 }
 
@@ -448,8 +669,9 @@ init() {
     ACTIVE_SLOT=$(get_active_slot)
 
     case "$SOURCE_CHOICE" in
-        1) handle_local ;;
+        1) handle_local_auto ;;
         2) handle_external ;;
+        3) handle_manual_select ;;
         *)
             echo "无效选择，脚本退出。" >&2
             exit 1
