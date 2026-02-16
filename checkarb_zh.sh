@@ -29,7 +29,7 @@
 ACTIVE_SLOT=""
 WORK_DIR="/data/local/tmp/checkarb"
 OUTPUT_FILE="xbl_config.img"
-BIN_ZIP_HASH="870002223df18d67b0790fa781516c1ddc4a3c39cf08ae8455ab3e1e4640066d"
+BIN_ZIP_HASH="d203b96fdf341a52d47171853bb5898342c5b5802eec70ce701aa276f19ac786"
 MARKER="__ARCHIVE_FOLLOWS__"
 IS_MEDIATEK=0
 BUSYBOX_CMD="busybox"
@@ -37,9 +37,18 @@ CANDIDATE_BASES="/dev/block/bootdevice/by-name /dev/block/platform/*/by-name /de
 #####End
 
 #####Fun
+run_as_su() {
+    if command -v su >/dev/null 2>&1; then
+        su -c "$1"
+    else
+        echo "错误：需要root权限但找不到su命令" >&2
+        exit 1
+    fi
+}
+
 remove_work_dir() {
     if command -v su >/dev/null 2>&1; then
-        su -c "rm -rf \"$WORK_DIR\"" 2>/dev/null
+        run_as_su "rm -rf \"$WORK_DIR\""
     else
         rm -rf "$WORK_DIR" 2>/dev/null
     fi
@@ -51,6 +60,26 @@ cleanup() {
 
 clear_screen() {
     printf "\033[2J\033[H"
+}
+
+handle_error() {
+    msg="$1"
+    code="$2"
+    output="$3"
+    echo "错误：$msg (返回码 $code)" >&2
+    if [ -n "$output" ]; then
+        echo "原始输出：" >&2
+        echo "$output" >&2
+    fi
+    build_version=$(getprop ro.build.display.id 2>/dev/null)
+    echo "设备 Build 版本: ${build_version:-未知}" >&2
+    exit $code
+}
+
+check_file_exists() {
+    path="$1"
+    run_as_su "test -e \"$path\"" || return 1
+    return 0
 }
 
 getAndroidShellType() {
@@ -207,9 +236,9 @@ gather_xbl_config_partitions() {
         fi
     done
     if [ -n "$find_cmd" ]; then
-        su -c "$find_cmd /dev/block -iname '*xbl_config*' 2>/dev/null > \"$tmp_file\""
+        run_as_su "$find_cmd /dev/block -iname '*xbl_config*' 2>/dev/null > \"$tmp_file\""
     else
-        su -c "find /dev/block -name '*xbl_config*' -o -name '*XBL_CONFIG*' 2>/dev/null > \"$tmp_file\""
+        run_as_su "find /dev/block -name '*xbl_config*' -o -name '*XBL_CONFIG*' 2>/dev/null > \"$tmp_file\""
     fi
     if [ -s "$tmp_file" ]; then
         if command -v sort >/dev/null 2>&1; then
@@ -313,7 +342,7 @@ find_partition_path() {
             fi
         done
     done
-    dir_list=$(find /dev/block -type d -name "by-name" 2>/dev/null)
+    dir_list=$(run_as_su "find /dev/block -type d -name 'by-name' 2>/dev/null")
     for dir in $dir_list; do
         if [ -d "$dir" ]; then
             for file in "$dir"/*; do
@@ -355,7 +384,7 @@ find_partition_path() {
 prepare_tools() {
     echo "正在准备检测工具..."
     remove_work_dir
-    su -c "mkdir -p \"$WORK_DIR\"" 2>/dev/null || {
+    run_as_su "mkdir -p \"$WORK_DIR\"" || {
         echo "错误：无法创建目录 $WORK_DIR" >&2
         exit 1
     }
@@ -368,19 +397,19 @@ prepare_tools() {
     fi
 
     tmp_zip="$WORK_DIR/bin.zip"
-    tail -n +$((line + 1)) "$script_self" | su -c "cat > \"$tmp_zip\"" 2>/dev/null || {
+    tail -n +$((line + 1)) "$script_self" | run_as_su "cat > \"$tmp_zip\"" 2>/dev/null || {
         echo "错误：提取附加数据失败" >&2
         exit 1
     }
 
     if command -v sha256sum >/dev/null 2>&1; then
-        computed_hash=$(su -c "sha256sum \"$tmp_zip\"" | cut -d' ' -f1)
+        computed_hash=$(run_as_su "sha256sum \"$tmp_zip\"" | cut -d' ' -f1)
     elif command -v busybox >/dev/null 2>&1 && busybox sha256sum --help >/dev/null 2>&1; then
-        computed_hash=$(su -c "busybox sha256sum \"$tmp_zip\"" | cut -d' ' -f1)
+        computed_hash=$(run_as_su "busybox sha256sum \"$tmp_zip\"" | cut -d' ' -f1)
     elif [ -n "$BUSYBOX_CMD" ] && [ -x "$BUSYBOX_CMD" ] && "$BUSYBOX_CMD" sha256sum --help >/dev/null 2>&1; then
-        computed_hash=$(su -c "$BUSYBOX_CMD sha256sum \"$tmp_zip\"" | cut -d' ' -f1)
+        computed_hash=$(run_as_su "$BUSYBOX_CMD sha256sum \"$tmp_zip\"" | cut -d' ' -f1)
     elif command -v openssl >/dev/null 2>&1; then
-        computed_hash=$(su -c "openssl dgst -sha256 \"$tmp_zip\"" | cut -d' ' -f2)
+        computed_hash=$(run_as_su "openssl dgst -sha256 \"$tmp_zip\"" | cut -d' ' -f2)
     else
         computed_hash=""
     fi
@@ -399,17 +428,17 @@ prepare_tools() {
     echo "哈希校验通过。"
 
     if command -v unzip >/dev/null 2>&1; then
-        su -c "unzip -q -o \"$tmp_zip\" -d \"$WORK_DIR\"" || {
+        run_as_su "unzip -q -o \"$tmp_zip\" -d \"$WORK_DIR\"" || {
             echo "错误：解压 bin.zip 失败" >&2
             exit 1
         }
     elif command -v busybox >/dev/null 2>&1 && busybox unzip --help >/dev/null 2>&1; then
-        su -c "busybox unzip -q -o \"$tmp_zip\" -d \"$WORK_DIR\"" || {
+        run_as_su "busybox unzip -q -o \"$tmp_zip\" -d \"$WORK_DIR\"" || {
             echo "错误：使用 busybox 解压失败" >&2
             exit 1
         }
     elif [ -n "$BUSYBOX_CMD" ] && [ -x "$BUSYBOX_CMD" ] && "$BUSYBOX_CMD" unzip --help >/dev/null 2>&1; then
-        su -c "$BUSYBOX_CMD unzip -q -o \"$tmp_zip\" -d \"$WORK_DIR\"" || {
+        run_as_su "$BUSYBOX_CMD unzip -q -o \"$tmp_zip\" -d \"$WORK_DIR\"" || {
             echo "错误：使用备用 busybox 解压失败" >&2
             exit 1
         }
@@ -418,7 +447,7 @@ prepare_tools() {
         exit 1
     fi
 
-    su -c "rm -f \"$tmp_zip\""
+    run_as_su "rm -f \"$tmp_zip\""
 
     case "$CPU_ARCH" in
         *aarch64*|*arm64*)
@@ -433,23 +462,23 @@ prepare_tools() {
             ;;
     esac
 
-    if ! su -c "test -f \"$WORK_DIR/$tool_zip\""; then
+    if ! run_as_su "test -f \"$WORK_DIR/$tool_zip\""; then
         echo "错误：在 bin.zip 中未找到 $tool_zip" >&2
         exit 1
     fi
 
     if command -v unzip >/dev/null 2>&1; then
-        su -c "unzip -q -o \"$WORK_DIR/$tool_zip\" -d \"$WORK_DIR\"" || {
+        run_as_su "unzip -q -o \"$WORK_DIR/$tool_zip\" -d \"$WORK_DIR\"" || {
             echo "错误：解压 $tool_zip 失败" >&2
             exit 1
         }
     elif command -v busybox >/dev/null 2>&1 && busybox unzip --help >/dev/null 2>&1; then
-        su -c "busybox unzip -q -o \"$WORK_DIR/$tool_zip\" -d \"$WORK_DIR\"" || {
+        run_as_su "busybox unzip -q -o \"$WORK_DIR/$tool_zip\" -d \"$WORK_DIR\"" || {
             echo "错误：使用 busybox 解压 $tool_zip 失败" >&2
             exit 1
         }
     elif [ -n "$BUSYBOX_CMD" ] && [ -x "$BUSYBOX_CMD" ] && "$BUSYBOX_CMD" unzip --help >/dev/null 2>&1; then
-        su -c "$BUSYBOX_CMD unzip -q -o \"$WORK_DIR/$tool_zip\" -d \"$WORK_DIR\"" || {
+        run_as_su "$BUSYBOX_CMD unzip -q -o \"$WORK_DIR/$tool_zip\" -d \"$WORK_DIR\"" || {
             echo "错误：使用备用 busybox 解压 $tool_zip 失败" >&2
             exit 1
         }
@@ -458,8 +487,8 @@ prepare_tools() {
         exit 1
     fi
 
-    su -c "rm -f \"$WORK_DIR\"/arb_inspector-*.zip"
-    su -c "chmod 755 \"$WORK_DIR/arb_inspector\"" 2>/dev/null || {
+    run_as_su "rm -f \"$WORK_DIR\"/arb_inspector-*.zip"
+    run_as_su "chmod 755 \"$WORK_DIR/arb_inspector\"" 2>/dev/null || {
         echo "错误：无法设置 arb_inspector 执行权限" >&2
         exit 1
     }
@@ -467,26 +496,8 @@ prepare_tools() {
     echo "工具准备完成。"
 }
 
-confirm_extraction() {
-    confirm_extraction_slot="$1"
-    echo "========================================"
-    echo "          提取确认"
-    echo "========================================"
-    echo ""
-    echo "当前活动槽位: ${confirm_extraction_slot:-无}"
-    echo ""
-    echo "是否提取对应的 xbl_config 固件？"
-    echo ""
-    printf "请输入 y 确认，n 取消："
-    read confirm_extraction_ans
-    case "$confirm_extraction_ans" in
-        [yY]|[yY][eE][sS]) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
 ensure_temp_dir() {
-    su -c "mkdir -p \"$WORK_DIR\"" 2>/dev/null || {
+    run_as_su "mkdir -p \"$WORK_DIR\"" 2>/dev/null || {
         echo "错误：无法创建目录 $WORK_DIR" >&2
         exit 1
     }
@@ -510,7 +521,7 @@ fetch_xbl_config() {
     
     fetch_xbl_config_dst="${WORK_DIR}/${OUTPUT_FILE}"
     
-    if ! su -c "cat '$partition_path' > '$fetch_xbl_config_dst'"; then
+    if ! run_as_su "cat '$partition_path' > '$fetch_xbl_config_dst'"; then
         echo "错误：无法读取分区 $partition_path 或写入 $fetch_xbl_config_dst" >&2
         return 1
     fi
@@ -519,37 +530,26 @@ fetch_xbl_config() {
     return 0
 }
 
-ask_source_type() {
-    echo "========================================" >&2
-    echo "          选择来源" >&2
-    echo "========================================" >&2
-    echo "" >&2
-    echo "请选择要检查的 xbl_config 固件来源：" >&2
-    echo "" >&2
-    echo "  1) 本机分区 (从当前设备提取)" >&2
-    echo "  2) 外部文件 (手动提供 img 文件)" >&2
-    echo "  3) 更多 xbl_config (手动选择分区)" >&2
-    echo "" >&2
-    printf "请输入数字 1-3：" >&2
-    read ask_source_type_result
-    echo "$ask_source_type_result"
-}
-
-inspect_generic() {
+perform_inspection() {
     img_path="$1"
+    block_mode="$2"
     inspector="$WORK_DIR/arb_inspector"
-    if ! su -c "test -f \"$inspector\"" || ! su -c "test -x \"$inspector\""; then
-        echo "错误：arb_inspector 工具不存在或不可执行" >&2
-        exit 1
+
+    if ! run_as_su "test -f \"$inspector\"" || ! run_as_su "test -x \"$inspector\""; then
+        handle_error "arb_inspector 工具不存在或不可执行" 1 ""
     fi
 
-    if ! su -c "test -f \"$img_path\""; then
-        echo "错误：镜像文件 $img_path 不存在" >&2
-        return 1
+    if ! check_file_exists "$img_path"; then
+        handle_error "镜像文件 $img_path 不存在" 2 ""
+    fi
+
+    cmd_base="$inspector"
+    if [ $block_mode -eq 1 ]; then
+        cmd_base="$cmd_base --block"
     fi
 
     echo "正在调用 arb_inspector 进行检查（调试模式）..."
-    debug_output=$(su -c "$inspector --debug \"$img_path\"" 2>&1)
+    debug_output=$(run_as_su "$cmd_base --debug \"$img_path\"" 2>&1)
     debug_status=$?
     if [ $debug_status -ne 0 ]; then
         echo "警告：arb_inspector 调试模式执行失败，返回码 $debug_status" >&2
@@ -563,14 +563,10 @@ inspect_generic() {
 
     echo ""
     echo "正在调用 arb_inspector 进行检查（正常模式）..."
-    normal_output=$(su -c "$inspector \"$img_path\"" 2>&1)
+    normal_output=$(run_as_su "$cmd_base \"$img_path\"" 2>&1)
     normal_status=$?
     if [ $normal_status -ne 0 ]; then
-        echo "错误：arb_inspector 正常模式执行失败，返回码 $normal_status" >&2
-        echo "$normal_output" >&2
-        build_version=$(getprop ro.build.display.id 2>/dev/null)
-        echo "设备 Build 版本: ${build_version:-未知}" >&2
-        return $normal_status
+        handle_error "arb_inspector 正常模式执行失败" $normal_status "$normal_output"
     fi
 
     echo ""
@@ -600,6 +596,39 @@ inspect_generic() {
     return 0
 }
 
+process_partition() {
+    path="$1"
+    mode="$2"
+    if [ "$mode" -eq 1 ]; then
+        ensure_temp_dir
+        dst="$WORK_DIR/$OUTPUT_FILE"
+        run_as_su "cat '$path' > '$dst'" || {
+            echo "错误：无法复制分区文件" >&2
+            return 1
+        }
+        perform_inspection "$dst" 0
+    else
+        perform_inspection "$path" 1
+    fi
+}
+
+do_manual_selection() {
+    part_path=$(select_partition_manually)
+    if [ -z "$part_path" ]; then
+        return 1
+    fi
+    echo "请选择操作：" >&2
+    echo "  1) 直接检查此分区" >&2
+    echo "  2) 提取后检查" >&2
+    printf "请输入数字 1 或 2: " >&2
+    read mode_choice
+    case "$mode_choice" in
+        1) process_partition "$part_path" 0 ;;
+        2) process_partition "$part_path" 1 ;;
+        *) echo "无效选择" >&2; return 1 ;;
+    esac
+}
+
 handle_external() {
     echo ""
     echo "请输入 xbl_config.img 的路径（支持绝对或相对路径）："
@@ -613,54 +642,62 @@ handle_external() {
         /*) ;;
         *) external_path="$(pwd)/$external_path" ;;
     esac
-    inspect_generic "$external_path"
+    perform_inspection "$external_path" 0
 }
 
-handle_local_auto() {
-    if confirm_extraction "$ACTIVE_SLOT"; then
-        ensure_temp_dir
-        if ! fetch_xbl_config "$ACTIVE_SLOT"; then
-            echo "自动识别失败，是否进入手动选择？(y/n)" >&2
-            read ans
-            case "$ans" in
-                [yY]|[yY][eE][sS])
-                    manual_path=$(select_partition_manually)
-                    if [ -n "$manual_path" ]; then
-                        if fetch_xbl_config "" "$manual_path"; then
-                            inspect_generic "$WORK_DIR/$OUTPUT_FILE"
-                        else
-                            exit 1
-                        fi
-                    else
-                        exit 1
-                    fi
-                    ;;
-                *)
-                    echo "用户取消操作。" >&2
-                    exit 0
-                    ;;
-            esac
-        else
-            inspect_generic "$WORK_DIR/$OUTPUT_FILE"
-        fi
-    else
-        echo "用户取消操作。" >&2
-        exit 0
-    fi
-}
-
-handle_manual_select() {
-    ensure_temp_dir
-    manual_path=$(select_partition_manually)
-    if [ -n "$manual_path" ]; then
-        if fetch_xbl_config "" "$manual_path"; then
-            inspect_generic "$WORK_DIR/$OUTPUT_FILE"
-        else
+handle_local() {
+    echo "请选择操作模式：" >&2
+    echo "  1) 自动模式（自动查找分区）" >&2
+    echo "  2) 手动选择分区" >&2
+    printf "请输入数字 1 或 2: " >&2
+    read local_mode
+    case "$local_mode" in
+        1)
+            part_path=$(find_partition_path "xbl_config" "$ACTIVE_SLOT")
+            if [ -n "$part_path" ]; then
+                echo "找到分区：$part_path" >&2
+                echo "请选择检查方式：" >&2
+                echo "  1) 直接检查此分区" >&2
+                echo "  2) 提取后检查" >&2
+                printf "请输入数字 1 或 2: " >&2
+                read inspect_mode
+                case "$inspect_mode" in
+                    1) process_partition "$part_path" 0 ;;
+                    2) process_partition "$part_path" 1 ;;
+                    *) echo "无效选择，退出。" >&2; exit 1 ;;
+                esac
+            else
+                echo "自动查找失败，是否进入手动选择？(y/n)" >&2
+                read ans
+                case "$ans" in
+                    [yY]|[yY][eE][sS]) do_manual_selection ;;
+                    *) echo "用户取消操作。" >&2; exit 0 ;;
+                esac
+            fi
+            ;;
+        2)
+            do_manual_selection
+            ;;
+        *)
+            echo "无效选择，退出。" >&2
             exit 1
-        fi
-    else
-        exit 1
-    fi
+            ;;
+    esac
+}
+
+ask_source_type() {
+    echo "========================================" >&2
+    echo "          选择来源" >&2
+    echo "========================================" >&2
+    echo "" >&2
+    echo "请选择要检查的 xbl_config 固件来源：" >&2
+    echo "" >&2
+    echo "  1) 本机分区" >&2
+    echo "  2) 外部文件" >&2
+    echo "" >&2
+    printf "请输入数字 1 或 2：" >&2
+    read ask_source_type_result
+    echo "$ask_source_type_result"
 }
 
 init() {
@@ -678,6 +715,10 @@ init() {
     check_if_mediatek
     find_busybox
 
+    echo ""
+    echo "注意：如果安装了防格机模块，本脚本很可能读取不了你设备的 ARB。" >&2
+    echo ""
+
     SOURCE_CHOICE=$(ask_source_type)
 
     prepare_tools
@@ -685,9 +726,12 @@ init() {
     ACTIVE_SLOT=$(get_active_slot)
 
     case "$SOURCE_CHOICE" in
-        1) handle_local_auto ;;
-        2) handle_external ;;
-        3) handle_manual_select ;;
+        1)
+            handle_local
+            ;;
+        2)
+            handle_external
+            ;;
         *)
             echo "无效选择，脚本退出。" >&2
             exit 1
@@ -702,6 +746,12 @@ main() {
     echo "  作者: dere3046"
     echo "  许可证: MIT"
     echo "========================================"
+    build_info=$(getprop ro.build.display.id 2>/dev/null)
+    if [ -n "$build_info" ]; then
+        echo "系统版本: $build_info"
+    else
+        echo "系统版本: 未知"
+    fi
     echo "本脚本仅操作目录: /data/local/tmp/checkarb"
     echo "对其他系统分区和目录仅进行读取操作，不会修改。"
     echo ""

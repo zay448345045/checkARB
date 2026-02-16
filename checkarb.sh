@@ -29,7 +29,7 @@
 ACTIVE_SLOT=""
 WORK_DIR="/data/local/tmp/checkarb"
 OUTPUT_FILE="xbl_config.img"
-BIN_ZIP_HASH="870002223df18d67b0790fa781516c1ddc4a3c39cf08ae8455ab3e1e4640066d"
+BIN_ZIP_HASH="d203b96fdf341a52d47171853bb5898342c5b5802eec70ce701aa276f19ac786"
 MARKER="__ARCHIVE_FOLLOWS__"
 IS_MEDIATEK=0
 BUSYBOX_CMD="busybox"
@@ -37,9 +37,18 @@ CANDIDATE_BASES="/dev/block/bootdevice/by-name /dev/block/platform/*/by-name /de
 #####End
 
 #####Fun
+run_as_su() {
+    if command -v su >/dev/null 2>&1; then
+        su -c "$1"
+    else
+        echo "Error: Root privileges required but su command not found" >&2
+        exit 1
+    fi
+}
+
 remove_work_dir() {
     if command -v su >/dev/null 2>&1; then
-        su -c "rm -rf \"$WORK_DIR\"" 2>/dev/null
+        run_as_su "rm -rf \"$WORK_DIR\""
     else
         rm -rf "$WORK_DIR" 2>/dev/null
     fi
@@ -51,6 +60,26 @@ cleanup() {
 
 clear_screen() {
     printf "\033[2J\033[H"
+}
+
+handle_error() {
+    msg="$1"
+    code="$2"
+    output="$3"
+    echo "Error: $msg (exit code $code)" >&2
+    if [ -n "$output" ]; then
+        echo "Raw output:" >&2
+        echo "$output" >&2
+    fi
+    build_version=$(getprop ro.build.display.id 2>/dev/null)
+    echo "Device Build version: ${build_version:-Unknown}" >&2
+    exit $code
+}
+
+check_file_exists() {
+    path="$1"
+    run_as_su "test -e \"$path\"" || return 1
+    return 0
 }
 
 getAndroidShellType() {
@@ -207,9 +236,9 @@ gather_xbl_config_partitions() {
         fi
     done
     if [ -n "$find_cmd" ]; then
-        su -c "$find_cmd /dev/block -iname '*xbl_config*' 2>/dev/null > \"$tmp_file\""
+        run_as_su "$find_cmd /dev/block -iname '*xbl_config*' 2>/dev/null > \"$tmp_file\""
     else
-        su -c "find /dev/block -name '*xbl_config*' -o -name '*XBL_CONFIG*' 2>/dev/null > \"$tmp_file\""
+        run_as_su "find /dev/block -name '*xbl_config*' -o -name '*XBL_CONFIG*' 2>/dev/null > \"$tmp_file\""
     fi
     if [ -s "$tmp_file" ]; then
         if command -v sort >/dev/null 2>&1; then
@@ -313,7 +342,7 @@ find_partition_path() {
             fi
         done
     done
-    dir_list=$(find /dev/block -type d -name "by-name" 2>/dev/null)
+    dir_list=$(run_as_su "find /dev/block -type d -name 'by-name' 2>/dev/null")
     for dir in $dir_list; do
         if [ -d "$dir" ]; then
             for file in "$dir"/*; do
@@ -355,7 +384,7 @@ find_partition_path() {
 prepare_tools() {
     echo "Preparing detection tools..."
     remove_work_dir
-    su -c "mkdir -p \"$WORK_DIR\"" 2>/dev/null || {
+    run_as_su "mkdir -p \"$WORK_DIR\"" || {
         echo "Error: Cannot create directory $WORK_DIR" >&2
         exit 1
     }
@@ -368,19 +397,19 @@ prepare_tools() {
     fi
 
     tmp_zip="$WORK_DIR/bin.zip"
-    tail -n +$((line + 1)) "$script_self" | su -c "cat > \"$tmp_zip\"" 2>/dev/null || {
+    tail -n +$((line + 1)) "$script_self" | run_as_su "cat > \"$tmp_zip\"" 2>/dev/null || {
         echo "Error: Failed to extract appended data" >&2
         exit 1
     }
 
     if command -v sha256sum >/dev/null 2>&1; then
-        computed_hash=$(su -c "sha256sum \"$tmp_zip\"" | cut -d' ' -f1)
+        computed_hash=$(run_as_su "sha256sum \"$tmp_zip\"" | cut -d' ' -f1)
     elif command -v busybox >/dev/null 2>&1 && busybox sha256sum --help >/dev/null 2>&1; then
-        computed_hash=$(su -c "busybox sha256sum \"$tmp_zip\"" | cut -d' ' -f1)
+        computed_hash=$(run_as_su "busybox sha256sum \"$tmp_zip\"" | cut -d' ' -f1)
     elif [ -n "$BUSYBOX_CMD" ] && [ -x "$BUSYBOX_CMD" ] && "$BUSYBOX_CMD" sha256sum --help >/dev/null 2>&1; then
-        computed_hash=$(su -c "$BUSYBOX_CMD sha256sum \"$tmp_zip\"" | cut -d' ' -f1)
+        computed_hash=$(run_as_su "$BUSYBOX_CMD sha256sum \"$tmp_zip\"" | cut -d' ' -f1)
     elif command -v openssl >/dev/null 2>&1; then
-        computed_hash=$(su -c "openssl dgst -sha256 \"$tmp_zip\"" | cut -d' ' -f2)
+        computed_hash=$(run_as_su "openssl dgst -sha256 \"$tmp_zip\"" | cut -d' ' -f2)
     else
         computed_hash=""
     fi
@@ -399,17 +428,17 @@ prepare_tools() {
     echo "Hash verification passed."
 
     if command -v unzip >/dev/null 2>&1; then
-        su -c "unzip -q -o \"$tmp_zip\" -d \"$WORK_DIR\"" || {
+        run_as_su "unzip -q -o \"$tmp_zip\" -d \"$WORK_DIR\"" || {
             echo "Error: Failed to extract bin.zip" >&2
             exit 1
         }
     elif command -v busybox >/dev/null 2>&1 && busybox unzip --help >/dev/null 2>&1; then
-        su -c "busybox unzip -q -o \"$tmp_zip\" -d \"$WORK_DIR\"" || {
+        run_as_su "busybox unzip -q -o \"$tmp_zip\" -d \"$WORK_DIR\"" || {
             echo "Error: Failed to extract using busybox" >&2
             exit 1
         }
     elif [ -n "$BUSYBOX_CMD" ] && [ -x "$BUSYBOX_CMD" ] && "$BUSYBOX_CMD" unzip --help >/dev/null 2>&1; then
-        su -c "$BUSYBOX_CMD unzip -q -o \"$tmp_zip\" -d \"$WORK_DIR\"" || {
+        run_as_su "$BUSYBOX_CMD unzip -q -o \"$tmp_zip\" -d \"$WORK_DIR\"" || {
             echo "Error: Failed to extract using alternative busybox" >&2
             exit 1
         }
@@ -418,7 +447,7 @@ prepare_tools() {
         exit 1
     fi
 
-    su -c "rm -f \"$tmp_zip\""
+    run_as_su "rm -f \"$tmp_zip\""
 
     case "$CPU_ARCH" in
         *aarch64*|*arm64*)
@@ -433,23 +462,23 @@ prepare_tools() {
             ;;
     esac
 
-    if ! su -c "test -f \"$WORK_DIR/$tool_zip\""; then
+    if ! run_as_su "test -f \"$WORK_DIR/$tool_zip\""; then
         echo "Error: $tool_zip not found in bin.zip" >&2
         exit 1
     fi
 
     if command -v unzip >/dev/null 2>&1; then
-        su -c "unzip -q -o \"$WORK_DIR/$tool_zip\" -d \"$WORK_DIR\"" || {
+        run_as_su "unzip -q -o \"$WORK_DIR/$tool_zip\" -d \"$WORK_DIR\"" || {
             echo "Error: Failed to extract $tool_zip" >&2
             exit 1
         }
     elif command -v busybox >/dev/null 2>&1 && busybox unzip --help >/dev/null 2>&1; then
-        su -c "busybox unzip -q -o \"$WORK_DIR/$tool_zip\" -d \"$WORK_DIR\"" || {
+        run_as_su "busybox unzip -q -o \"$WORK_DIR/$tool_zip\" -d \"$WORK_DIR\"" || {
             echo "Error: Failed to extract $tool_zip using busybox" >&2
             exit 1
         }
     elif [ -n "$BUSYBOX_CMD" ] && [ -x "$BUSYBOX_CMD" ] && "$BUSYBOX_CMD" unzip --help >/dev/null 2>&1; then
-        su -c "$BUSYBOX_CMD unzip -q -o \"$WORK_DIR/$tool_zip\" -d \"$WORK_DIR\"" || {
+        run_as_su "$BUSYBOX_CMD unzip -q -o \"$WORK_DIR/$tool_zip\" -d \"$WORK_DIR\"" || {
             echo "Error: Failed to extract $tool_zip using alternative busybox" >&2
             exit 1
         }
@@ -458,8 +487,8 @@ prepare_tools() {
         exit 1
     fi
 
-    su -c "rm -f \"$WORK_DIR\"/arb_inspector-*.zip"
-    su -c "chmod 755 \"$WORK_DIR/arb_inspector\"" 2>/dev/null || {
+    run_as_su "rm -f \"$WORK_DIR\"/arb_inspector-*.zip"
+    run_as_su "chmod 755 \"$WORK_DIR/arb_inspector\"" 2>/dev/null || {
         echo "Error: Cannot set executable permission for arb_inspector" >&2
         exit 1
     }
@@ -467,26 +496,8 @@ prepare_tools() {
     echo "Tools preparation completed."
 }
 
-confirm_extraction() {
-    confirm_extraction_slot="$1"
-    echo "========================================"
-    echo "          Extraction Confirmation"
-    echo "========================================"
-    echo ""
-    echo "Active slot: ${confirm_extraction_slot:-none}"
-    echo ""
-    echo "Extract the corresponding xbl_config firmware?"
-    echo ""
-    printf "Please enter y to confirm, n to cancel: "
-    read confirm_extraction_ans
-    case "$confirm_extraction_ans" in
-        [yY]|[yY][eE][sS]) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
 ensure_temp_dir() {
-    su -c "mkdir -p \"$WORK_DIR\"" 2>/dev/null || {
+    run_as_su "mkdir -p \"$WORK_DIR\"" 2>/dev/null || {
         echo "Error: Cannot create directory $WORK_DIR" >&2
         exit 1
     }
@@ -510,7 +521,7 @@ fetch_xbl_config() {
     
     fetch_xbl_config_dst="${WORK_DIR}/${OUTPUT_FILE}"
     
-    if ! su -c "cat '$partition_path' > '$fetch_xbl_config_dst'"; then
+    if ! run_as_su "cat '$partition_path' > '$fetch_xbl_config_dst'"; then
         echo "Error: Cannot read partition $partition_path or write to $fetch_xbl_config_dst" >&2
         return 1
     fi
@@ -519,37 +530,26 @@ fetch_xbl_config() {
     return 0
 }
 
-ask_source_type() {
-    echo "========================================" >&2
-    echo "          Select Source" >&2
-    echo "========================================" >&2
-    echo "" >&2
-    echo "Please select the source of xbl_config firmware to check:" >&2
-    echo "" >&2
-    echo "  1) Local partition (extract from current device)" >&2
-    echo "  2) External file (manually provide img file)" >&2
-    echo "  3) More xbl_config (manually select partition)" >&2
-    echo "" >&2
-    printf "Please enter number 1-3: " >&2
-    read ask_source_type_result
-    echo "$ask_source_type_result"
-}
-
-inspect_generic() {
+perform_inspection() {
     img_path="$1"
+    block_mode="$2"
     inspector="$WORK_DIR/arb_inspector"
-    if ! su -c "test -f \"$inspector\"" || ! su -c "test -x \"$inspector\""; then
-        echo "Error: arb_inspector tool not found or not executable" >&2
-        exit 1
+
+    if ! run_as_su "test -f \"$inspector\"" || ! run_as_su "test -x \"$inspector\""; then
+        handle_error "arb_inspector tool not found or not executable" 1 ""
     fi
 
-    if ! su -c "test -f \"$img_path\""; then
-        echo "Error: Image file $img_path does not exist" >&2
-        return 1
+    if ! check_file_exists "$img_path"; then
+        handle_error "Image file $img_path does not exist" 2 ""
+    fi
+
+    cmd_base="$inspector"
+    if [ $block_mode -eq 1 ]; then
+        cmd_base="$cmd_base --block"
     fi
 
     echo "Calling arb_inspector to check (debug mode)..."
-    debug_output=$(su -c "$inspector --debug \"$img_path\"" 2>&1)
+    debug_output=$(run_as_su "$cmd_base --debug \"$img_path\"" 2>&1)
     debug_status=$?
     if [ $debug_status -ne 0 ]; then
         echo "Warning: arb_inspector debug mode execution failed, exit code $debug_status" >&2
@@ -563,14 +563,10 @@ inspect_generic() {
 
     echo ""
     echo "Calling arb_inspector to check (normal mode)..."
-    normal_output=$(su -c "$inspector \"$img_path\"" 2>&1)
+    normal_output=$(run_as_su "$cmd_base \"$img_path\"" 2>&1)
     normal_status=$?
     if [ $normal_status -ne 0 ]; then
-        echo "Error: arb_inspector normal mode execution failed, exit code $normal_status" >&2
-        echo "$normal_output" >&2
-        build_version=$(getprop ro.build.display.id 2>/dev/null)
-        echo "Device Build Version: ${build_version:-Unknown}" >&2
-        return $normal_status
+        handle_error "arb_inspector normal mode execution failed" $normal_status "$normal_output"
     fi
 
     echo ""
@@ -600,6 +596,39 @@ inspect_generic() {
     return 0
 }
 
+process_partition() {
+    path="$1"
+    mode="$2"
+    if [ "$mode" -eq 1 ]; then
+        ensure_temp_dir
+        dst="$WORK_DIR/$OUTPUT_FILE"
+        run_as_su "cat '$path' > '$dst'" || {
+            echo "Error: Cannot copy partition file" >&2
+            return 1
+        }
+        perform_inspection "$dst" 0
+    else
+        perform_inspection "$path" 1
+    fi
+}
+
+do_manual_selection() {
+    part_path=$(select_partition_manually)
+    if [ -z "$part_path" ]; then
+        return 1
+    fi
+    echo "Choose operation:" >&2
+    echo "  1) Directly inspect this partition" >&2
+    echo "  2) Extract and inspect" >&2
+    printf "Please enter number 1 or 2: " >&2
+    read mode_choice
+    case "$mode_choice" in
+        1) process_partition "$part_path" 0 ;;
+        2) process_partition "$part_path" 1 ;;
+        *) echo "Invalid choice" >&2; return 1 ;;
+    esac
+}
+
 handle_external() {
     echo ""
     echo "Please enter the path to xbl_config.img (absolute or relative):"
@@ -613,54 +642,62 @@ handle_external() {
         /*) ;;
         *) external_path="$(pwd)/$external_path" ;;
     esac
-    inspect_generic "$external_path"
+    perform_inspection "$external_path" 0
 }
 
-handle_local_auto() {
-    if confirm_extraction "$ACTIVE_SLOT"; then
-        ensure_temp_dir
-        if ! fetch_xbl_config "$ACTIVE_SLOT"; then
-            echo "Auto detection failed, enter manual selection? (y/n)" >&2
-            read ans
-            case "$ans" in
-                [yY]|[yY][eE][sS])
-                    manual_path=$(select_partition_manually)
-                    if [ -n "$manual_path" ]; then
-                        if fetch_xbl_config "" "$manual_path"; then
-                            inspect_generic "$WORK_DIR/$OUTPUT_FILE"
-                        else
-                            exit 1
-                        fi
-                    else
-                        exit 1
-                    fi
-                    ;;
-                *)
-                    echo "User cancelled operation." >&2
-                    exit 0
-                    ;;
-            esac
-        else
-            inspect_generic "$WORK_DIR/$OUTPUT_FILE"
-        fi
-    else
-        echo "User cancelled operation." >&2
-        exit 0
-    fi
-}
-
-handle_manual_select() {
-    ensure_temp_dir
-    manual_path=$(select_partition_manually)
-    if [ -n "$manual_path" ]; then
-        if fetch_xbl_config "" "$manual_path"; then
-            inspect_generic "$WORK_DIR/$OUTPUT_FILE"
-        else
+handle_local() {
+    echo "Choose operation mode:" >&2
+    echo "  1) Auto mode (auto-detect partition)" >&2
+    echo "  2) Manually select partition" >&2
+    printf "Please enter number 1 or 2: " >&2
+    read local_mode
+    case "$local_mode" in
+        1)
+            part_path=$(find_partition_path "xbl_config" "$ACTIVE_SLOT")
+            if [ -n "$part_path" ]; then
+                echo "Found partition: $part_path" >&2
+                echo "Choose inspection method:" >&2
+                echo "  1) Directly inspect this partition" >&2
+                echo "  2) Extract and inspect" >&2
+                printf "Please enter number 1 or 2: " >&2
+                read inspect_mode
+                case "$inspect_mode" in
+                    1) process_partition "$part_path" 0 ;;
+                    2) process_partition "$part_path" 1 ;;
+                    *) echo "Invalid choice, exiting." >&2; exit 1 ;;
+                esac
+            else
+                echo "Auto detection failed, enter manual selection? (y/n)" >&2
+                read ans
+                case "$ans" in
+                    [yY]|[yY][eE][sS]) do_manual_selection ;;
+                    *) echo "User cancelled operation." >&2; exit 0 ;;
+                esac
+            fi
+            ;;
+        2)
+            do_manual_selection
+            ;;
+        *)
+            echo "Invalid choice, exiting." >&2
             exit 1
-        fi
-    else
-        exit 1
-    fi
+            ;;
+    esac
+}
+
+ask_source_type() {
+    echo "========================================" >&2
+    echo "          Select Source" >&2
+    echo "========================================" >&2
+    echo "" >&2
+    echo "Please select the source of xbl_config firmware to check:" >&2
+    echo "" >&2
+    echo "  1) Local partition" >&2
+    echo "  2) External file" >&2
+    echo "" >&2
+    printf "Please enter number 1 or 2: " >&2
+    read ask_source_type_result
+    echo "$ask_source_type_result"
 }
 
 init() {
@@ -678,6 +715,10 @@ init() {
     check_if_mediatek
     find_busybox
 
+    echo ""
+    echo "Note: If you have anti-brick modules installed, this script may not be able to read your device's ARB." >&2
+    echo ""
+
     SOURCE_CHOICE=$(ask_source_type)
 
     prepare_tools
@@ -685,9 +726,12 @@ init() {
     ACTIVE_SLOT=$(get_active_slot)
 
     case "$SOURCE_CHOICE" in
-        1) handle_local_auto ;;
-        2) handle_external ;;
-        3) handle_manual_select ;;
+        1)
+            handle_local
+            ;;
+        2)
+            handle_external
+            ;;
         *)
             echo "Invalid choice, script exiting." >&2
             exit 1
@@ -702,6 +746,12 @@ main() {
     echo "  Author: dere3046"
     echo "  License: MIT"
     echo "========================================"
+    build_info=$(getprop ro.build.display.id 2>/dev/null)
+    if [ -n "$build_info" ]; then
+        echo "System build: $build_info"
+    else
+        echo "System build: Unknown"
+    fi
     echo "This script only operates in directory: /data/local/tmp/checkarb"
     echo "Other system partitions and directories are only read, not modified."
     echo ""
