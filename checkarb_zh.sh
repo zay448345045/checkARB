@@ -29,7 +29,7 @@
 ACTIVE_SLOT=""
 WORK_DIR="/data/local/tmp/checkarb"
 OUTPUT_FILE="xbl_config.img"
-BIN_ZIP_HASH="81efe18f604f93f21941d198a0157873d74a656a947572ff0e3a027ad8904298"
+BIN_ZIP_HASH="870002223df18d67b0790fa781516c1ddc4a3c39cf08ae8455ab3e1e4640066d"
 MARKER="__ARCHIVE_FOLLOWS__"
 IS_MEDIATEK=0
 BUSYBOX_CMD="busybox"
@@ -548,21 +548,37 @@ inspect_generic() {
         return 1
     fi
 
-    echo "正在调用 arb_inspector 进行检查..."
-    output=$(su -c "$inspector \"$img_path\"" 2>&1)
-    inspect_status=$?
-    if [ $inspect_status -ne 0 ]; then
-        echo "警告：arb_inspector 执行失败，返回码 $inspect_status" >&2
-        echo "$output" >&2
-        return $inspect_status
+    echo "正在调用 arb_inspector 进行检查（调试模式）..."
+    debug_output=$(su -c "$inspector --debug \"$img_path\"" 2>&1)
+    debug_status=$?
+    if [ $debug_status -ne 0 ]; then
+        echo "警告：arb_inspector 调试模式执行失败，返回码 $debug_status" >&2
+        echo "$debug_output" >&2
+    else
+        echo ""
+        echo "========== 调试输出 =========="
+        echo "$debug_output"
+        echo "=============================="
     fi
 
     echo ""
-    echo "========== 检查结果 =========="
-    echo "$output"
-    echo "=============================="
+    echo "正在调用 arb_inspector 进行检查（正常模式）..."
+    normal_output=$(su -c "$inspector \"$img_path\"" 2>&1)
+    normal_status=$?
+    if [ $normal_status -ne 0 ]; then
+        echo "错误：arb_inspector 正常模式执行失败，返回码 $normal_status" >&2
+        echo "$normal_output" >&2
+        build_version=$(getprop ro.build.display.id 2>/dev/null)
+        echo "设备 Build 版本: ${build_version:-未知}" >&2
+        return $normal_status
+    fi
 
-    arb_version=$(echo "$output" | awk -F': ' '/Anti-Rollback Version/ {print $2}')
+    echo ""
+    echo "========== 正常检查结果 =========="
+    echo "$normal_output"
+    echo "================================"
+
+    arb_version=$(echo "$normal_output" | awk -F': ' '/Anti-Rollback Version/ {print $2}')
     if [ -z "$arb_version" ]; then
         echo "警告：无法从输出中解析 Anti-Rollback Version" >&2
     else

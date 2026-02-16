@@ -29,7 +29,7 @@
 ACTIVE_SLOT=""
 WORK_DIR="/data/local/tmp/checkarb"
 OUTPUT_FILE="xbl_config.img"
-BIN_ZIP_HASH="81efe18f604f93f21941d198a0157873d74a656a947572ff0e3a027ad8904298"
+BIN_ZIP_HASH="870002223df18d67b0790fa781516c1ddc4a3c39cf08ae8455ab3e1e4640066d"
 MARKER="__ARCHIVE_FOLLOWS__"
 IS_MEDIATEK=0
 BUSYBOX_CMD="busybox"
@@ -548,21 +548,37 @@ inspect_generic() {
         return 1
     fi
 
-    echo "Calling arb_inspector to check..."
-    output=$(su -c "$inspector \"$img_path\"" 2>&1)
-    inspect_status=$?
-    if [ $inspect_status -ne 0 ]; then
-        echo "Warning: arb_inspector execution failed, exit code $inspect_status" >&2
-        echo "$output" >&2
-        return $inspect_status
+    echo "Calling arb_inspector to check (debug mode)..."
+    debug_output=$(su -c "$inspector --debug \"$img_path\"" 2>&1)
+    debug_status=$?
+    if [ $debug_status -ne 0 ]; then
+        echo "Warning: arb_inspector debug mode execution failed, exit code $debug_status" >&2
+        echo "$debug_output" >&2
+    else
+        echo ""
+        echo "========== Debug Output =========="
+        echo "$debug_output"
+        echo "=================================="
     fi
 
     echo ""
-    echo "========== Inspection Result =========="
-    echo "$output"
-    echo "======================================="
+    echo "Calling arb_inspector to check (normal mode)..."
+    normal_output=$(su -c "$inspector \"$img_path\"" 2>&1)
+    normal_status=$?
+    if [ $normal_status -ne 0 ]; then
+        echo "Error: arb_inspector normal mode execution failed, exit code $normal_status" >&2
+        echo "$normal_output" >&2
+        build_version=$(getprop ro.build.display.id 2>/dev/null)
+        echo "Device Build Version: ${build_version:-Unknown}" >&2
+        return $normal_status
+    fi
 
-    arb_version=$(echo "$output" | awk -F': ' '/Anti-Rollback Version/ {print $2}')
+    echo ""
+    echo "========== Normal Inspection Result =========="
+    echo "$normal_output"
+    echo "=============================================="
+
+    arb_version=$(echo "$normal_output" | awk -F': ' '/Anti-Rollback Version/ {print $2}')
     if [ -z "$arb_version" ]; then
         echo "Warning: Could not parse Anti-Rollback Version from output" >&2
     else
