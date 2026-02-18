@@ -50,6 +50,9 @@ CAT_CMD=""
 SHA256SUM_CMD=""
 UNZIP_CMD=""
 TR_CMD=""
+DD_CMD=""
+SED_CMD=""
+WC_CMD=""
 #####End
 
 #####Fun
@@ -461,10 +464,28 @@ prepare_tools() {
     fi
 
     tmp_zip="$WORK_DIR/bin.zip"
-    $TAIL_CMD -n +$((line + 1)) "$script_self" | run_as_su "$CAT_CMD > \"$tmp_zip\"" 2>/dev/null || {
-        printf "\033[31mError: Failed to extract appended data\033[0m\n" >&2
-        exit 1
-    }
+
+    printf "\033[36mTrying method 1: tail + cat\033[0m\n" >&2
+    if run_as_su "$TAIL_CMD -n +$((line + 1)) \"$script_self\" > \"$tmp_zip\"" 2>/dev/null; then
+        printf "\033[32mMethod 1 succeeded\033[0m\n" >&2
+    else
+        
+        printf "\033[33mMethod 1 failed, trying method 2: dd\033[0m\n" >&2
+        total_lines=$(run_as_su "$CAT_CMD \"$script_self\" | $WC_CMD -l")
+        skip_lines=$line
+        if run_as_su "$DD_CMD if=\"$script_self\" of=\"$tmp_zip\" bs=1 skip=$skip_lines 2>/dev/null"; then
+            printf "\033[32mMethod 2 succeeded\033[0m\n" >&2
+        else
+
+            printf "\033[33mMethod 2 failed, trying method 3: sed\033[0m\n" >&2
+            if run_as_su "$SED_CMD -n '1,${line}d' \"$script_self\" > \"$tmp_zip\"" 2>/dev/null; then
+                printf "\033[32mMethod 3 succeeded\033[0m\n" >&2
+            else
+                printf "\033[31mError: All extraction methods failed, cannot extract appended data\033[0m\n" >&2
+                exit 1
+            fi
+        fi
+    fi
 
     if [ -n "$SHA256SUM_CMD" ]; then
         computed_hash=$(run_as_su "$SHA256SUM_CMD \"$tmp_zip\"" | $CUT_CMD -d' ' -f1)
@@ -771,9 +792,8 @@ ask_source_type() {
     echo "" >&2
     printf "  1) Local partition\n" >&2
     printf "  2) External file\n" >&2
-    printf "  3) I have anti-brick module installed\n" >&2
     echo "" >&2
-    printf "\033[33mPlease enter number 1-3: \033[0m" >&2
+    printf "\033[33mPlease enter number 1 or 2: \033[0m" >&2
     read ask_source_type_result
     echo "$ask_source_type_result"
 }
@@ -803,8 +823,11 @@ init() {
     SHA256SUM_CMD=$(find_command sha256sum)
     UNZIP_CMD=$(find_command unzip)
     TR_CMD=$(find_command tr)
+    DD_CMD=$(find_command dd)
+    SED_CMD=$(find_command sed)
+    WC_CMD=$(find_command wc)
 
-    for cmd_var in AWK_CMD CUT_CMD FIND_CMD HEAD_CMD TAIL_CMD READLINK_CMD MKDIR_CMD RM_CMD CHMOD_CMD CAT_CMD TR_CMD; do
+    for cmd_var in AWK_CMD CUT_CMD FIND_CMD HEAD_CMD TAIL_CMD READLINK_CMD MKDIR_CMD RM_CMD CHMOD_CMD CAT_CMD TR_CMD DD_CMD SED_CMD WC_CMD; do
         eval "cmd_val=\$$cmd_var"
         if [ -z "$cmd_val" ]; then
             printf "\033[31mError: Required command ${cmd_var%_CMD} not found\033[0m\n" >&2
@@ -832,6 +855,9 @@ init() {
         SHA256SUM_CMD=$(find_command sha256sum)
         UNZIP_CMD=$(find_command unzip)
         TR_CMD=$(find_command tr)
+        DD_CMD=$(find_command dd)
+        SED_CMD=$(find_command sed)
+        WC_CMD=$(find_command wc)
     fi
 
     SOURCE_CHOICE=$(ask_source_type)
@@ -841,7 +867,7 @@ init() {
     ACTIVE_SLOT=$(get_active_slot)
 
     case "$SOURCE_CHOICE" in
-        1|3)
+        1)
             handle_local
             ;;
         2)

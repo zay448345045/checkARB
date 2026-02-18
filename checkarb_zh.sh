@@ -50,6 +50,8 @@ CAT_CMD=""
 SHA256SUM_CMD=""
 UNZIP_CMD=""
 TR_CMD=""
+DD_CMD=""
+SED_CMD=""
 #####End
 
 #####Fun
@@ -461,11 +463,30 @@ prepare_tools() {
     fi
 
     tmp_zip="$WORK_DIR/bin.zip"
-    $TAIL_CMD -n +$((line + 1)) "$script_self" | run_as_su "$CAT_CMD > \"$tmp_zip\"" 2>/dev/null || {
-        printf "\033[31m错误：提取附加数据失败\033[0m\n" >&2
-        exit 1
-    }
+    
+    printf "\033[36m尝试方法1: tail + cat\033[0m\n" >&2
+    if run_as_su "$TAIL_CMD -n +$((line + 1)) \"$script_self\" > \"$tmp_zip\"" 2>/dev/null; then
+        printf "\033[32m方法1成功\033[0m\n" >&2
+    else
+        
+        printf "\033[33m方法1失败，尝试方法2: dd\033[0m\n" >&2
+        total_lines=$(run_as_su "$CAT_CMD \"$script_self\" | $WC_CMD -l")
+        skip_lines=$line
+        if run_as_su "$DD_CMD if=\"$script_self\" of=\"$tmp_zip\" bs=1 skip=$skip_lines 2>/dev/null"; then
+            printf "\033[32m方法2成功\033[0m\n" >&2
+        else
+            
+            printf "\033[33m方法2失败，尝试方法3: sed\033[0m\n" >&2
+            if run_as_su "$SED_CMD -n '1,${line}d' \"$script_self\" > \"$tmp_zip\"" 2>/dev/null; then
+                printf "\033[32m方法3成功\033[0m\n" >&2
+            else
+                printf "\033[31m错误：所有提取方法均失败，无法提取附加数据\033[0m\n" >&2
+                exit 1
+            fi
+        fi
+    fi
 
+    
     if [ -n "$SHA256SUM_CMD" ]; then
         computed_hash=$(run_as_su "$SHA256SUM_CMD \"$tmp_zip\"" | $CUT_CMD -d' ' -f1)
     elif command -v openssl >/dev/null 2>&1; then
@@ -772,9 +793,8 @@ ask_source_type() {
     echo "" >&2
     printf "  1) 本机分区\n" >&2
     printf "  2) 外部文件\n" >&2
-    printf "  3) 我安装了防格机模块\n" >&2
     echo "" >&2
-    printf "\033[33m请输入数字 1-3：\033[0m" >&2
+    printf "\033[33m请输入数字 1 或 2：\033[0m" >&2
     read ask_source_type_result
     echo "$ask_source_type_result"
 }
@@ -804,8 +824,11 @@ init() {
     SHA256SUM_CMD=$(find_command sha256sum)
     UNZIP_CMD=$(find_command unzip)
     TR_CMD=$(find_command tr)
+    DD_CMD=$(find_command dd)
+    SED_CMD=$(find_command sed)
+    WC_CMD=$(find_command wc)
 
-    for cmd_var in AWK_CMD CUT_CMD FIND_CMD HEAD_CMD TAIL_CMD READLINK_CMD MKDIR_CMD RM_CMD CHMOD_CMD CAT_CMD TR_CMD; do
+    for cmd_var in AWK_CMD CUT_CMD FIND_CMD HEAD_CMD TAIL_CMD READLINK_CMD MKDIR_CMD RM_CMD CHMOD_CMD CAT_CMD TR_CMD DD_CMD SED_CMD WC_CMD; do
         eval "cmd_val=\$$cmd_var"
         if [ -z "$cmd_val" ]; then
             printf "\033[31m错误：找不到必要命令 ${cmd_var%_CMD}\033[0m\n" >&2
@@ -833,6 +856,9 @@ init() {
         SHA256SUM_CMD=$(find_command sha256sum)
         UNZIP_CMD=$(find_command unzip)
         TR_CMD=$(find_command tr)
+        DD_CMD=$(find_command dd)
+        SED_CMD=$(find_command sed)
+        WC_CMD=$(find_command wc)
     fi
 
     SOURCE_CHOICE=$(ask_source_type)
@@ -842,7 +868,7 @@ init() {
     ACTIVE_SLOT=$(get_active_slot)
 
     case "$SOURCE_CHOICE" in
-        1|3)
+        1)
             handle_local
             ;;
         2)
