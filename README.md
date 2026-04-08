@@ -19,3 +19,8 @@ checkARB is a self-extracting shell script designed to extract and examine the a
 - **Clean‑up Guarantee**: Regardless of success or failure, the script uses a `trap` to automatically remove the working directory (`/data/local/tmp/checkarb`) on exit, leaving no residue.
 - **Hash Verification**: The embedded `bin.zip` is validated against a SHA256 checksum to prevent tampering or corruption.
 - **User‑Friendly Interface**: Plain‑text menus guide the user through source selection, extraction confirmation, and external path input—no extra tools like `dialog` are required.
+
+
+[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https://github.com/Dere3046/checkARB&count_bg=%2379C83D&title_bg=%23555555&icon=github.svg&icon_color=%23E7E7E7&title=hits&edge_flat=false)](https://hits.seeyoufarm.com)
+
+[![Total Downloads](https://img.shields.io/github/downloads/Dere3046/checkARB/total?style=for-the-badge&color=2ea44f&logo=github)](https://github.com/Dere3046/checkARB/releases)
